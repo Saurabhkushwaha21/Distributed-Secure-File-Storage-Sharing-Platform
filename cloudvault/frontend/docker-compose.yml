@@ -1,0 +1,28 @@
+version: "3.9"
+
+# Standalone compose file for the frontend only, useful for frontend-only
+# development against an already-running backend at VITE_API_BASE_URL.
+#
+# To run the FULL stack (this frontend + the CloudVault backend's own
+# docker-compose.yml) together, add this service block into the backend
+# repo's docker-compose.yml instead, so both share one Docker network and
+# the nginx.conf's `proxy_pass http://backend:8000` resolves correctly:
+#
+#   frontend:
+#     build:
+#       context: ../cloudvault-frontend
+#       dockerfile: Dockerfile
+#     restart: unless-stopped
+#     ports:
+#       - "3000:80"
+#     depends_on:
+#       - backend
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:80"

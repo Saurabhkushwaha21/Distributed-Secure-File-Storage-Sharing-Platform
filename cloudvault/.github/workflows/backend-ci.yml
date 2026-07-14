@@ -1,0 +1,73 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
+  pull_request:
+    branches: ["main"]
+    paths: ["backend/**", ".github/workflows/backend-ci.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          REDIS_URL: redis://localhost:6379/0
+          JWT_SECRET_KEY: ci-test-secret
+          FILE_ENCRYPTION_KEY: Y2ktdGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVz
+        run: pytest tests/ -v --cov=app --cov-report=term-missing
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/docker/Dockerfile
+          push: false
+          tags: cloudvault-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # deploy:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main'
+  #   steps:
+  #     - name: Deploy to target environment
+  #       run: echo "Wire in your actual deploy step here (ECS/EKS/Fly/etc.)"

@@ -1,0 +1,67 @@
+name: Integration Smoke Test
+
+# Builds the actual production docker-compose stack (mysql + redis +
+# backend + frontend/nginx) and hits it exactly the way a browser would —
+# through the frontend's nginx, not directly against the backend — to
+# catch wiring regressions (bad proxy_pass, CORS, env var mismatches)
+# that per-service CI can't see.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write a throwaway .env for CI
+        run: |
+          cat > .env << 'EOF'
+          MYSQL_PASSWORD=ci_test_password
+          MYSQL_ROOT_PASSWORD=ci_test_root_password
+          REDIS_PASSWORD=ci_test_redis_password
+          JWT_SECRET_KEY=ci-test-jwt-secret-not-for-real-use
+          FILE_ENCRYPTION_KEY=Y2ktdGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVz
+          CORS_ORIGINS=["http://localhost"]
+          EOF
+
+      - name: Build and start the stack
+        run: docker compose --env-file .env up -d --build
+
+      - name: Wait for the stack to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost/api/ >/dev/null 2>&1 || curl -s http://localhost/ | grep -qi html; then
+              echo "Frontend is up"
+              break
+            fi
+            echo "Waiting for stack... ($i/30)"
+            sleep 3
+          done
+
+      - name: Smoke test — register + login THROUGH the nginx-proxied frontend origin
+        run: |
+          set -e
+          REGISTER=$(curl -s -w "\n%{http_code}" -X POST http://localhost/api/auth/register \
+            -H "Content-Type: application/json" \
+            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1","full_name":"CI Smoke"}')
+          echo "$REGISTER"
+          echo "$REGISTER" | tail -1 | grep -q "201"
+
+          LOGIN=$(curl -s -X POST http://localhost/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1","device_info":"ci"}')
+          echo "$LOGIN"
+          echo "$LOGIN" | grep -q "access_token"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,164 @@
+version: "3.9"
+
+# Full CloudVault stack — frontend and backend wired together on one
+# Docker network. The frontend's own nginx (built in frontend/Dockerfile)
+# is the ONLY container exposed to the host: it serves the compiled SPA
+# and reverse-proxies /api/ and /ws/ to the backend, so the browser only
+# ever talks to one origin. See frontend/docker/nginx.conf for the proxy
+# rules (including per-IP rate limiting on /api/).
+#
+# Quick start:
+#   cp .env.example .env      # fill in real secrets — see comments below
+#   docker compose --env-file .env up -d --build
+#   open http://localhost
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: cloudvault
+      MYSQL_USER: cloudvault
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not exposed to the host on purpose — only `backend`/`celery-*` reach
+    # it, over the internal compose network. Uncomment to inspect with a
+    # local MySQL client during setup:
+    # ports:
+    #   - "3306:3306"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      ENV: production
+      DEBUG: "false"
+      DATABASE_URL: mysql+pymysql://cloudvault:${MYSQL_PASSWORD}@mysql:3306/cloudvault
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
+      FILE_ENCRYPTION_KEY: ${FILE_ENCRYPTION_KEY:?set FILE_ENCRYPTION_KEY in .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost"]}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - storage_data:/data/storage
+    # Not exposed to the host — only reachable via the frontend nginx's
+    # /api and /ws proxy. Uncomment for direct debugging:
+    # ports:
+    #   - "8000:8000"
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      DATABASE_URL: mysql+pymysql://cloudvault:${MYSQL_PASSWORD}@mysql:3306/cloudvault
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
+      FILE_ENCRYPTION_KEY: ${FILE_ENCRYPTION_KEY:?set FILE_ENCRYPTION_KEY in .env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - storage_data:/data/storage
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: mysql+pymysql://cloudvault:${MYSQL_PASSWORD}@mysql:3306/cloudvault
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+    depends_on:
+      - redis
+      - mysql
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+  # --- Monitoring (opt-in) ---
+  # Off by default so a plain `docker compose up` stays lightweight.
+  # Bring these up with: docker compose --profile monitoring up -d
+  # The backend already exposes /metrics unconditionally when
+  # PROMETHEUS_ENABLED=true (see app/main.py) - these two services are
+  # what actually scrape and visualize it end to end.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Not asking for a real secret via :? here, unlike DB/JWT secrets -
+      # Grafana isn't exposed to the host's public internet by default in
+      # most deployments of this stack, but still change this for anything
+      # beyond local use.
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  mysql_data:
+  redis_data:
+  storage_data:
+  prometheus_data:
+  grafana_data:

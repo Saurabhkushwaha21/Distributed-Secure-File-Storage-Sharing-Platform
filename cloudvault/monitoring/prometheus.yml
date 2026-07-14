@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # Matches the "backend" service name in docker-compose.yml - reachable
+  # over the internal compose network without exposing the backend's port
+  # to the host.
+  - job_name: cloudvault-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]

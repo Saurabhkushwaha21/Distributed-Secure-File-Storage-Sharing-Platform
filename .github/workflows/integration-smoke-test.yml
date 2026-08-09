@@ -3,8 +3,7 @@ name: Integration Smoke Test
 # Builds the actual production docker-compose stack (mysql + redis +
 # backend + frontend/nginx) and hits it exactly the way a browser would —
 # through the frontend's nginx, not directly against the backend — to
-# catch wiring regressions (bad proxy_pass, CORS, env var mismatches)
-# that per-service CI can't see.
+# catch wiring regressions (bad proxy_pass, CORS, env var mismatches).
 
 on:
   push:
@@ -32,29 +31,33 @@ jobs:
       - name: Build and start the stack
         run: docker compose --env-file .env up -d --build
 
-      - name: Wait for the stack to be healthy
+      - name: Wait for the backend through nginx
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost/api/ >/dev/null 2>&1 || curl -s http://localhost/ | grep -qi html; then
-              echo "Frontend is up"
+          for i in $(seq 1 60); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/api/v1/auth/register || true)
+            if [ "$status" != "000" ] && [ "$status" != "502" ] && [ "$status" != "503" ]; then
+              echo "Backend is reachable through nginx (HTTP $status)"
               break
             fi
-            echo "Waiting for stack... ($i/30)"
+            echo "Waiting for backend... ($i/60, HTTP $status)"
             sleep 3
           done
+          test "$status" != "000"
+          test "$status" != "502"
+          test "$status" != "503"
 
       - name: Smoke test — register + login THROUGH the nginx-proxied frontend origin
         run: |
           set -e
-          REGISTER=$(curl -s -w "\n%{http_code}" -X POST http://localhost/api/auth/register \
+          REGISTER=$(curl -s -w "\n%{http_code}" -X POST http://localhost/api/v1/auth/register \
             -H "Content-Type: application/json" \
-            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1","full_name":"CI Smoke"}')
+            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1!","full_name":"CI Smoke"}')
           echo "$REGISTER"
           echo "$REGISTER" | tail -1 | grep -q "201"
 
-          LOGIN=$(curl -s -X POST http://localhost/api/auth/login \
+          LOGIN=$(curl -s -X POST http://localhost/api/v1/auth/login \
             -H "Content-Type: application/json" \
-            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1","device_info":"ci"}')
+            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1!","device_info":"ci"}')
           echo "$LOGIN"
           echo "$LOGIN" | grep -q "access_token"
 

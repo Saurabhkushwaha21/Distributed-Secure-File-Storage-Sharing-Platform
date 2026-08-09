@@ -39,6 +39,7 @@ jobs:
 
       - name: Run tests
         env:
+          PYTHONPATH: .
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET_KEY: ci-test-secret
           FILE_ENCRYPTION_KEY: Y2ktdGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVz

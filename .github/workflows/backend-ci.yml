@@ -39,10 +39,14 @@ jobs:
 
       - name: Run tests
         env:
+          PYTHONPATH: .
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET_KEY: ci-test-secret
           FILE_ENCRYPTION_KEY: Y2ktdGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVz
-        run: pytest tests/ -v --cov=app --cov-report=term-missing
+          LOCAL_STORAGE_ROOT: /tmp/cloudvault-storage
+        run: |
+          mkdir -p "$LOCAL_STORAGE_ROOT"
+          pytest tests/ -v --cov=app --cov-report=term-missing
 
   build:
     needs: test

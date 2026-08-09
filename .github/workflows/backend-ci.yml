@@ -43,6 +43,7 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET_KEY: ci-test-secret
           FILE_ENCRYPTION_KEY: Y2ktdGVzdC1lbmNyeXB0aW9uLWtleS0zMmJ5dGVz
+          LOCAL_STORAGE_ROOT: /tmp/cloudvault-storage
         run: pytest tests/ -v --cov=app --cov-report=term-missing
 
   build:
@@ -64,11 +65,3 @@ jobs:
           tags: cloudvault-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # deploy:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   if: github.ref == 'refs/heads/main'
-  #   steps:
-  #     - name: Deploy to target environment
-  #       run: echo "Wire in your actual deploy step here (ECS/EKS/Fly/etc.)"

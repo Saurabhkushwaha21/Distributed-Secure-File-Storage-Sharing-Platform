@@ -1,10 +1,10 @@
 name: Integration Smoke Test
 
 # Builds the actual production docker-compose stack (mysql + redis +
-# backend + frontend/nginx) and hits it exactly the way a browser would —
-# through the frontend's nginx, not directly against the backend — to
-# catch wiring regressions (bad proxy_pass, CORS, env var mismatches)
-# that per-service CI can't see.
+# backend + frontend/nginx) and verifies authentication through nginx.
+# The smoke test waits for the backend application itself, not merely
+# for nginx to serve the static frontend, so startup races produce a
+# deterministic CI result.
 
 on:
   push:
@@ -32,29 +32,37 @@ jobs:
       - name: Build and start the stack
         run: docker compose --env-file .env up -d --build
 
-      - name: Wait for the stack to be healthy
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost/api/ >/dev/null 2>&1 || curl -s http://localhost/ | grep -qi html; then
-              echo "Frontend is up"
-              break
-            fi
-            echo "Waiting for stack... ($i/30)"
-            sleep 3
-          done
-
-      - name: Smoke test — register + login THROUGH the nginx-proxied frontend origin
+      - name: Wait for backend through nginx
         run: |
           set -e
-          REGISTER=$(curl -s -w "\n%{http_code}" -X POST http://localhost/api/auth/register \
+          for i in $(seq 1 60); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/api/v1/auth/register || true)
+            if [ "$HTTP_CODE" != "502" ] && [ "$HTTP_CODE" != "000" ]; then
+              echo "Backend is reachable through nginx (HTTP $HTTP_CODE)"
+              break
+            fi
+            echo "Waiting for backend through nginx... ($i/60, HTTP $HTTP_CODE)"
+            sleep 2
+          done
+
+          if [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "000" ]; then
+            echo "Backend did not become reachable through nginx in time."
+            docker compose ps
+            exit 1
+          fi
+
+      - name: Smoke test — register + login THROUGH nginx
+        run: |
+          set -e
+          REGISTER=$(curl -s -w "\n%{http_code}" -X POST http://localhost/api/v1/auth/register \
             -H "Content-Type: application/json" \
-            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1","full_name":"CI Smoke"}')
+            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1!","full_name":"CI Smoke"}')
           echo "$REGISTER"
           echo "$REGISTER" | tail -1 | grep -q "201"
 
-          LOGIN=$(curl -s -X POST http://localhost/api/auth/login \
+          LOGIN=$(curl -s -X POST http://localhost/api/v1/auth/login \
             -H "Content-Type: application/json" \
-            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1","device_info":"ci"}')
+            -d '{"email":"ci-smoke@example.com","password":"SuperSecret1!","device_info":"ci"}')
           echo "$LOGIN"
           echo "$LOGIN" | grep -q "access_token"
 
